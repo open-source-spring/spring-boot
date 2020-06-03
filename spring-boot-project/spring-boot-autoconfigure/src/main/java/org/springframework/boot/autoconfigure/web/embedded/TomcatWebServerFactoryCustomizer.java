@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2019 the original author or authors.
+ * Copyright 2012-2020 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -84,9 +84,10 @@ public class TomcatWebServerFactoryCustomizer
 		propertyMapper.from(tomcatProperties::getBackgroundProcessorDelay).whenNonNull().as(Duration::getSeconds)
 				.as(Long::intValue).to(factory::setBackgroundProcessorDelay);
 		customizeRemoteIpValve(factory);
-		propertyMapper.from(tomcatProperties::getMaxThreads).when(this::isPositive)
-				.to((maxThreads) -> customizeMaxThreads(factory, tomcatProperties.getMaxThreads()));
-		propertyMapper.from(tomcatProperties::getMinSpareThreads).when(this::isPositive)
+		ServerProperties.Tomcat.Threads threadProperties = tomcatProperties.getThreads();
+		propertyMapper.from(threadProperties::getMax).when(this::isPositive)
+				.to((maxThreads) -> customizeMaxThreads(factory, threadProperties.getMax()));
+		propertyMapper.from(threadProperties::getMinSpare).when(this::isPositive)
 				.to((minSpareThreads) -> customizeMinThreads(factory, minSpareThreads));
 		propertyMapper.from(this.serverProperties.getMaxHttpHeaderSize()).whenNonNull().asInt(DataSize::toBytes)
 				.when(this::isPositive)
@@ -99,8 +100,6 @@ public class TomcatWebServerFactoryCustomizer
 		propertyMapper.from(tomcatProperties::getAccesslog).when(ServerProperties.Tomcat.Accesslog::isEnabled)
 				.to((enabled) -> customizeAccessLog(factory));
 		propertyMapper.from(tomcatProperties::getUriEncoding).whenNonNull().to(factory::setUriEncoding);
-		propertyMapper.from(properties::getConnectionTimeout).whenNonNull()
-				.to((connectionTimeout) -> customizeConnectionTimeout(factory, connectionTimeout));
 		propertyMapper.from(tomcatProperties::getConnectionTimeout).whenNonNull()
 				.to((connectionTimeout) -> customizeConnectionTimeout(factory, connectionTimeout));
 		propertyMapper.from(tomcatProperties::getMaxConnections).when(this::isPositive)
@@ -187,7 +186,13 @@ public class TomcatWebServerFactoryCustomizer
 			// The internal proxies default to a white list of "safe" internal IP
 			// addresses
 			valve.setInternalProxies(remoteIpProperties.getInternalProxies());
-			valve.setHostHeader(remoteIpProperties.getHostHeader());
+			try {
+				valve.setHostHeader(remoteIpProperties.getHostHeader());
+			}
+			catch (NoSuchMethodError ex) {
+				// Avoid failure with war deployments to Tomcat 8.5 before 8.5.44 and
+				// Tomcat 9 before 9.0.23
+			}
 			valve.setPortHeader(remoteIpProperties.getPortHeader());
 			valve.setProtocolHeaderHttpsValue(remoteIpProperties.getProtocolHeaderHttpsValue());
 			// ... so it's safe to add this valve by default.
@@ -196,7 +201,7 @@ public class TomcatWebServerFactoryCustomizer
 	}
 
 	private boolean getOrDeduceUseForwardHeaders() {
-		if (this.serverProperties.getForwardHeadersStrategy().equals(ServerProperties.ForwardHeadersStrategy.NONE)) {
+		if (this.serverProperties.getForwardHeadersStrategy() == null) {
 			CloudPlatform platform = CloudPlatform.getActive(this.environment);
 			return platform != null && platform.isUsingForwardHeaders();
 		}
@@ -276,17 +281,15 @@ public class TomcatWebServerFactoryCustomizer
 
 	private void customizeStaticResources(ConfigurableTomcatWebServerFactory factory) {
 		ServerProperties.Tomcat.Resource resource = this.serverProperties.getTomcat().getResource();
-		factory.addContextCustomizers((context) -> {
-			context.addLifecycleListener((event) -> {
-				if (event.getType().equals(Lifecycle.CONFIGURE_START_EVENT)) {
-					context.getResources().setCachingAllowed(resource.isAllowCaching());
-					if (resource.getCacheTtl() != null) {
-						long ttl = resource.getCacheTtl().toMillis();
-						context.getResources().setCacheTtl(ttl);
-					}
+		factory.addContextCustomizers((context) -> context.addLifecycleListener((event) -> {
+			if (event.getType().equals(Lifecycle.CONFIGURE_START_EVENT)) {
+				context.getResources().setCachingAllowed(resource.isAllowCaching());
+				if (resource.getCacheTtl() != null) {
+					long ttl = resource.getCacheTtl().toMillis();
+					context.getResources().setCacheTtl(ttl);
 				}
-			});
-		});
+			}
+		}));
 	}
 
 	private void customizeErrorReportValve(ErrorProperties error, ConfigurableTomcatWebServerFactory factory) {
